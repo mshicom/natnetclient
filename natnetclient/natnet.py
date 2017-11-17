@@ -17,21 +17,21 @@ def strcpy(stream):
 
 NAT_PING  					= 0
 NAT_PINGRESPONSE			= 1
-NAT_REQUEST					= 2
+NAT_REQUEST				= 2
 NAT_RESPONSE				= 3
 NAT_REQUEST_MODELDEF		= 4
 NAT_MODELDEF				= 5
-NAT_REQUEST_FRAMEOFDATA		= 6
-NAT_FRAMEOFDATA				= 7
+NAT_REQUEST_FRAMEOFDATA	= 6
+NAT_FRAMEOFDATA			= 7
 NAT_MESSAGESTRING			= 8
 NAT_UNNRECOGNIZED_REQUEST	= 100
 UNDEFINED					= 999999.9999
 
-MAX_PACKETSIZE				= 100000
-MAX_NAMELENGTH				= 256
+MAX_PACKETSIZE			= 100000
+MAX_NAMELENGTH			= 256
 
-CLIENT_ADDRESS =            "127.0.0.1" #socket.gethostbyname(socket.gethostname())  #Default is now local address.
-MULTICAST_ADDRESS			= "239.255.42.99"
+CLIENT_ADDRESS           = "127.0.0.1"  #socket.gethostbyname(socket.gethostname())  #Default is now local address.
+MULTICAST_ADDRESS			= "224.0.0.1"
 PORT_COMMAND				= 1510
 PORT_DATA					= 1511
 
@@ -70,29 +70,26 @@ class NatSocket(object):
         self.max_packet_size = max_packet_size
 
 class NatCommSocket(NatSocket):
-
-    def __init__(self, client_ip=CLIENT_ADDRESS, uPort=PORT_COMMAND,
-                 max_packet_size=MAX_PACKETSIZE):
+    """ Socket for command communication, using simple point-to-point UDP connection"""
+    def __init__(self, server_ip, uPort=PORT_COMMAND, max_packet_size=MAX_PACKETSIZE):
         """Internet Protocol socket with presets for Motive Command Socket.
 
-        Args:
-            client_ip (int): an int
-
         """
-        super(NatCommSocket, self).__init__(client_ip, uPort, max_packet_size)
         # Set Instance Attributes
-        self.server_ip = client_ip  # Currently set to same value as client_ip.  May change when computer changes.
+        self.server_ip = server_ip
+        client_ip = socket.gethostbyname(socket.gethostname())
 
-        # Connect Socket
-        self._sock.bind((client_ip, 0))
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self._sock.setblocking(0)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, OPT_VAL)  # Not originally in this function. Check why.
+        super(NatCommSocket, self).__init__(client_ip, uPort, max_packet_size)
+
+        # Bind socket to receive stuff
+        self._sock.bind(('', uPort)) #
 
     def recv(self):
         """Receives packet from NatNet Server and returns as NatPacket instance."""
         packet = self._sock.recv(self.max_packet_size + 4)
         packet = NatPacket(packet)
+        print( "[Client] Received command from {0}: Command={1}, nDataBytes={2}".format(
+                self.client_ip, packet.iMessage, packet.nDataBytes))
         return packet
 
     def send(self, nat_value, message='', sleep_time=.02):
@@ -104,12 +101,12 @@ class NatCommSocket(NatSocket):
           - 1 = NAT_PINGRESPONSE
           - 2 = NAT_REQUEST  (must also send a message string.)
           3 = NAT_RESPONSE
-          4 = NAT_REQUEST_MODELDEF		
+          4 = NAT_REQUEST_MODELDEF
           5 = NAT_MODELDEF
           6 = NAT_REQUEST_FRAMEOFDATA
           7 = NAT_FRAMEOFDATA
           8 = NAT_MESSAGESTRIN
-        
+
         """
         message_len = len(message)
 
@@ -119,6 +116,7 @@ class NatCommSocket(NatSocket):
             self._sock.sendto(pack("HH", nat_value, 4), (self.server_ip, self.port))  # send both nat_value and packet size
 
         time.sleep(sleep_time)
+        print("Message sent.")
 
     def get_data(self, nat_value, message='', num_attempts=3):
         """Combines the send() and recv() functions into a single convenience function for requesting data.
@@ -132,6 +130,7 @@ class NatCommSocket(NatSocket):
                 time.sleep(.008)
                 packet = self.recv()
                 if packet.iMessage == nat_value + 1:
+                    print("Correct packet received on attempt {0}.".format(receive_attempt))
                     # if packet.iMessage == NAT_RESPONSE:  # Should always get a reply, but seems a bit unreliable.
                     #    print("Message: {0}".format(packet._packet[4:]))
                     return packet
@@ -148,18 +147,18 @@ class NatCommSocket(NatSocket):
 
 class NatDataSocket(NatSocket):
 
-    def __init__(self, client_ip=CLIENT_ADDRESS, port=PORT_DATA, max_packet_size=MAX_PACKETSIZE):
+    def __init__(self, multicast_address=MULTICAST_ADDRESS, port=PORT_DATA, max_packet_size=MAX_PACKETSIZE):
         """Internet Protocol socket with presets for Motive Data Socket."""
-        super(NatDataSocket, self).__init__(client_ip, port, max_packet_size)
+        super(NatDataSocket, self).__init__('', port, max_packet_size)
 
         # Configure and Connect socket
         self._sock._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        mreq = socket.inet_aton(MULTICAST_ADDRESS) + socket.inet_aton(client_ip)
+        self._sock.bind(('', port))
+
+        mreq = pack("=4sl", socket.inet_aton(multicast_address), socket.INADDR_ANY)
         self._sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, OPT_VAL)
-        self._sock.bind((client_ip, port))
-        # self.bind((Optitrack.CLIENT_ADDRESS, socket.htons(Optitrack.PORT_DATA)))  # If the above line doesn't work.
-        self._sock.settimeout(60.0)
+        self._sock.settimeout(4.0)
 
     def recv(self):
         """Receives packet from NatNet Server and returns as NatPacket instance."""
@@ -168,14 +167,15 @@ class NatDataSocket(NatSocket):
 
 class NatClient(object):
 
-    def __init__(self, client_ip=CLIENT_ADDRESS, data_port=PORT_DATA, comm_port=PORT_COMMAND, read_rate=400):
+    def __init__(self, server_ip, multicast_address=MULTICAST_ADDRESS,
+                 data_port=PORT_DATA, comm_port=PORT_COMMAND, read_rate=400):
         """
         The Optitrack NatNet Interface.  When initialized, starts a background thread that automatically updates data.
 
         The Optitrack object is the main object for acquiring 3D marker data from the Motive NatNet Streaming.  It uses their depaketezation example to parse the data packet, and it does so in a background thread.  :py:class:`.NatDataSocket` and :py:class:`.NatCommSocket` are automatically created and wrapped by the Optitrack object, and several other convenence functions have been added.
 
         Args:
-            client_ip (str): The Motive server ip address.  If running on the same PC as Motive, both IP settings should be set to 'Local Loopback', which is '127.0.0.1'.  
+            server_ip (str): The Motive server ip address.  If running on the same PC as Motive, both IP settings should be set to 'Local Loopback', which is '127.0.0.1'.
             data_port (int): The NatNet Data Socket port number.  Should match the settings in the Streaming pane in Motive.
             comm_port (int): The NatNet Command Socket port number.  Should match the settings in the Streaming pane in Motive.
             read_rate (int): How often the thread should loop, in frames per second.  Should be set faster than the camera framerate, or the data acquired will be laggy as the buffer fills.
@@ -200,7 +200,7 @@ class NatClient(object):
         self.tracked_models_changed = True
 
         # Create Command and Data Sockets
-        self.comm_sock = NatCommSocket(client_ip, comm_port)
+        self.comm_sock = NatCommSocket(server_ip, comm_port)
 
         # Ping server to establish connection and get version numbers.
         self.server_name, self.version, self.natnet_version = self.ping()
@@ -209,7 +209,7 @@ class NatClient(object):
         self.get_model()
 
         # Connect up data socket to get packet data, and then start a continuous reader thread to keep data up-to-date.
-        self.data_sock = NatDataSocket(client_ip=client_ip, port=data_port)
+        self.data_sock = NatDataSocket(multicast_address, data_port)
         self._data_thread = threading.Thread(group=None, target=self._continuous_get_data, name="Optitrack Reader Thread", args=(1./read_rate, ))
         self._data_thread.daemon = True
         self._data_thread.start()
@@ -246,6 +246,7 @@ class NatClient(object):
         NatNetVersion = unpacked[5:9]
 
         assert NatNetVersion[0] >= 2, "NatNetVersion not compatible with parser (Requires 2.0.0.0 or up)"
+        print('Ping Response Received from compatible server.')
 
         return (server_name, Version, NatNetVersion)
 
@@ -274,17 +275,17 @@ class NatClient(object):
         for attempt in range(n_attempts):
             # Using comm_sock.get_data() sometimes gets annoying non-blocking error.
             self.comm_sock.send(2, "StartRecording")
-                
+
             # Check if successful, by getting new data packet.
             self.get_data()
             if self.is_recording:
                 break
-        else:    
+        else:
             raise RuntimeError("Recording failed after {0} attempts.".format(attempt))
 
     def stop_recording(self, n_attempts=3):
         """
-        Sends the 'StopRecording' command over the NatNet Command Port to Motive. 
+        Sends the 'StopRecording' command over the NatNet Command Port to Motive.
 
         .. warning:: This method isn't working at the moment, for reasons not yet uncovered.  Still, will raise an error if unsuccessful, so this method is safe to test on your system.
 
@@ -306,7 +307,10 @@ class NatClient(object):
             # Check if successful, by getting new data packet.
             self.get_data()
             if self.is_recording == False:
+                print("Recording Started Successfully")
                 return
+            else:
+                print("Recording failed on attempt number {0}.  Trying again...".format(attempt))
 
         warnings.warn("Motive isn't currently responding to the 'StopRecording' command.  This seems to be a Motive bug, but cause is unknown.\n"
                       "For the time being, manual stopping is suggested.")
@@ -426,7 +430,7 @@ class NatClient(object):
             body_id, x, y, z, qx, qy, qz, qw = unpack('i7f',data.read(32))
             body = self.rigid_bodies_by_id[body_id] #self.rigid_bodies[id]
             body.position = x, y, z
-            body.quaternion = qx, qy, qz, qw
+            body.rotation = qx, qy, qz, qw
 
             # Get body's markers' information
             body.markers = []  # That's right.  Reset the whole damn marker list.
@@ -535,13 +539,17 @@ class NatClient(object):
     def wait_for_recording_start(self, debug_mode=False):
         """Halts script until recording begins."""
         if not debug_mode:
+            print("Waiting for recording to begin...")
             while not self.is_recording:
                 self.get_data()
+            print("...Recording started.")
 
     def wait_for_recording_stop(self, debug_mode=False):
         """Halts script until recording ends."""
         if not debug_mode:
+            print("Waiting for recording to end...")
             while self.is_recording:
                 self.get_data()
+            print("...Recording stopped.")
 
 
