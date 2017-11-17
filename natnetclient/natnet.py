@@ -553,3 +553,11 @@ class NatClient(object):
             print("...Recording stopped.")
 
 
+if __name__ == '__main__':
+  client = NatClient(server_ip        ='131.220.233.56',
+                     multicast_address='224.0.0.1',
+                     data_port        =1511,
+                     comm_port        =1510)
+  while 1:
+    print( client.rigid_bodies['RigidBody_1'].position)
+    time.sleep(1.0/120)
